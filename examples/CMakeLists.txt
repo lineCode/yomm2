@@ -4,27 +4,27 @@
 # or copy at http://www.boost.org/LICENSE_1_0.txt)
 
 add_executable(synopsis synopsis.cpp)
-target_link_libraries (synopsis yomm2)
+target_link_libraries (synopsis yomm2 ${CMAKE_THREAD_LIBS_INIT})
 add_test (synopsis synopsis)
 
 add_executable(matrix matrix.cpp)
-target_link_libraries (matrix yomm2)
+target_link_libraries (matrix yomm2 ${CMAKE_THREAD_LIBS_INIT})
 add_test (matrix matrix)
 
 add_executable(accept_no_visitors accept_no_visitors.cpp)
-target_link_libraries (accept_no_visitors yomm2)
+target_link_libraries (accept_no_visitors yomm2 ${CMAKE_THREAD_LIBS_INIT})
 add_test (accept_no_visitors accept_no_visitors)
 
 add_executable(adventure adventure.cpp)
-target_link_libraries (adventure yomm2)
+target_link_libraries (adventure yomm2 ${CMAKE_THREAD_LIBS_INIT})
 add_test (adventure adventure)
 
 add_executable(next next.cpp)
-target_link_libraries (next yomm2)
+target_link_libraries (next yomm2 ${CMAKE_THREAD_LIBS_INIT})
 add_test (next next)
 
 add_executable(asteroids asteroids.cpp)
-target_link_libraries (asteroids yomm2)
+target_link_libraries (asteroids yomm2 ${CMAKE_THREAD_LIBS_INIT})
 add_test (asteroids asteroids)
 
 if(NOT MSVC)
@@ -36,5 +36,5 @@ if(NOT MSVC)
     set_target_properties(dl_main PROPERTIES LINK_FLAGS "-Wl,-export_dynamic")
     set_target_properties(dl_shared PROPERTIES LINK_FLAGS "-Wl,-undefined,dynamic_lookup")
   endif()
-  target_link_libraries (dl_main yomm2 dl)
+  target_link_libraries (dl_main yomm2 dl ${CMAKE_THREAD_LIBS_INIT})
 endif()

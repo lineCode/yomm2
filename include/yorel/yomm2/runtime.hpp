@@ -109,6 +109,11 @@ struct runtime {
         const std::vector<rt_class>& classes,
         hash_function& hash,
         metrics_t& metrics);
+    static void find_hash_function(
+        const std::vector<std::uintptr_t>& values,
+        hash_function& hash,
+        metrics_t& metrics);
+
     static std::vector<const rt_spec*> best(std::vector<const rt_spec*>& candidates);
     static bool is_more_specific(const rt_spec* a, const rt_spec* b);
     static bool is_base(const rt_spec* a, const rt_spec* b);

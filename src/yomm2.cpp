@@ -7,11 +7,17 @@
 #include <yorel/yomm2/runtime.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <iomanip>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <random>
+
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #if YOMM2_ENABLE_TRACE
 #include <iostream>
@@ -552,74 +558,160 @@ void runtime::find_hash_function(
     const std::vector<rt_class>& classes,
         hash_function& hash,
         metrics_t& metrics) {
-    std::vector<const void*> keys;
-    auto start_time = std::chrono::steady_clock::now();
+    std::vector<std::uintptr_t> keys;
 
     for (auto& cls : classes) {
-        std::copy(
+        std::transform(
             cls.info->ti_ptrs.begin(), cls.info->ti_ptrs.end(),
-            std::back_inserter(keys));
+            std::back_inserter(keys),
+            [](const void* p) { return reinterpret_cast<std::uintptr_t>(p); });
     }
 
-    const auto N = keys.size();
+    find_hash_function(keys, hash, metrics);
+}
 
-    YOMM2_TRACE(log() << "Finding hash factor for " << N << " ti*\n");
+#define YOMM2_TRACE_FIND_HASH(exp) exp
+
+void runtime::find_hash_function(
+        const std::vector<std::uintptr_t>& values,
+        hash_function& hash,
+        metrics_t& metrics) {
+
+    if (values.empty()) {
+        return;
+    }
+
+    const auto start_time = std::chrono::steady_clock::now();
+    const auto N = values.size();
+
+    YOMM2_TRACE_FIND_HASH(
+        log() << "Finding hash factor for " << N << " ti* using "
+        << std::thread::hardware_concurrency() << " threads\n");
 
     std::default_random_engine rnd(13081963);
-    int total_attempts = 0;
     int M = 1;
 
-    for (auto size = N * 5 / 4; size >>= 1; ) {
+    for (auto size = N * 8 / 7; size >>= 1; ) {
         ++M;
     }
 
     std::uniform_int_distribution<std::uintptr_t> uniform_dist;
+    auto shift = 8 * sizeof(std::uintptr_t) - M;
 
-    for (int pass = 0; pass < 4; ++pass, ++M) {
+    struct {
+        std::mutex mx;
+        std::condition_variable test_ready, result_ready;
+        bool stop{false};
+    } control;
 
-        hash.shift = 8 * sizeof(std::uintptr_t) - M;
-        auto hash_size = 1 << M;
+    struct test_t {
+        int id;
+        std::thread thread;
+        hash_function hash;
+        std::vector<int> buckets;
+        enum { RUNNING, FOUND, FAILED } status;
+    };
 
-        YOMM2_TRACE(
-            log() << indent(1) << "trying with M = " << M
-            << ", " << hash_size << " buckets\n");
+    std::vector<test_t> tests(std::thread::hardware_concurrency());
+    const test_t *success = nullptr;
 
-        bool found = false;
-        int attempts = 0;
-        std::vector<int> buckets(hash_size);
+    std::unique_lock<std::mutex> lock(control.mx);
 
-        while (!found && attempts < 100000) {
-            ++attempts;
-            ++total_attempts;
-            found = true;
-            hash.mult = uniform_dist(rnd) | 1;
+    for (auto& test : tests) {
+        test.id = &test - &tests[0];
+        test.hash.mult = uniform_dist(rnd) | 1;
+        test.hash.shift = shift;
+        test.buckets.resize(1 << M);
+        test.status = test_t::RUNNING;
 
-            for (auto key : keys) {
-                auto h = hash(key);
-                if (buckets[h]++) {
-                    found = false;
-                    break;
+        test.thread = std::thread(
+            [&values, &control, &test]() {
+                while (true) {
+                    bool found = true;
+
+                    for (auto value : values) {
+                        if (test.buckets[test.hash(value)]++) {
+                            found = false;
+                            break;
+                        }
+                    }
+
+                    std::unique_lock<std::mutex> lock(control.mx);
+
+                    YOMM2_TRACE_FIND_HASH(
+                        log() << test.id
+                        << ": tried " << test.hash.mult
+                        << ", " << test.buckets.size()
+                        << ", " << test.hash.shift
+                        << "; found = " << found
+                        << "\n");
+
+                    test.status = found ? test_t::FOUND : test_t::FAILED;
+                    control.result_ready.notify_one();
+
+                    control.test_ready.wait(
+                        lock, [&control, &test](){
+                            return control.stop || test.status == test_t::RUNNING;
+                        });
+
+                    if (control.stop) {
+                        YOMM2_TRACE_FIND_HASH(log() << test.id << ": exiting\n");
+                        break;
+                    }
                 }
-            }
-
-            std::fill(buckets.begin(), buckets.end(), 0);
-        }
-
-        metrics.hash_search_attempts = total_attempts;
-        metrics.hash_search_time = std::chrono::steady_clock::now() - start_time;
-        metrics.hash_table_size = hash_size;
-
-        if (found) {
-            YOMM2_TRACE(
-                log() << indent(1) << "found " << hash.mult
-                << " after " << total_attempts << " attempts and "
-                << metrics.hash_search_time.count() * 1000 << " msecs\n");
-            return;
-        }
+            });
     }
 
-    throw std::runtime_error("cannot find hash factor");
+    int total_attempts = 0;
+
+    while (!control.stop) {
+        control.result_ready.wait(lock);
+
+        for (auto& test : tests) {
+            if (test.status == test_t::FOUND) {
+                ++total_attempts;
+                control.stop = true;
+                success = &test;
+                break;
+            }
+
+            if (test.status == test_t::FAILED) {
+                ++total_attempts;
+                test.hash.mult = uniform_dist(rnd) | 1;
+                std::fill(test.buckets.begin(), test.buckets.end(), 0);
+                test.status = test_t::RUNNING;
+            }
+        }
+
+        control.test_ready.notify_all();
+    }
+
+    control.mx.unlock();
+
+    for (auto& test : tests) {
+        test.thread.join();
+    }
+
+    metrics.hash_search_attempts = total_attempts;
+    metrics.hash_search_time = std::chrono::steady_clock::now() - start_time;
+    metrics.hash_table_size = 1 << M;
+
+    if (!success) {
+        YOMM2_TRACE(
+            log() << indent(1) << "failed to find hash function after "
+            << total_attempts << " attempts and "
+            << metrics.hash_search_time.count() * 1000 << " msecs\n");
+        throw std::runtime_error("cannot find hash function");
+    }
+
+    hash = success->hash;
+
+    YOMM2_TRACE(
+        log() << indent(1) << "found x*" << hash.mult << ">>" <<  hash.shift
+        << " after " << total_attempts << " attempts and "
+        << metrics.hash_search_time.count() * 1000 << " msecs\n");
 }
+
 
 void operator +=(std::vector<word>& words, const std::vector<int>& ints) {
     words.reserve(words.size() + ints.size());
@@ -887,7 +979,6 @@ void unregistered_class_error(const std::type_info* pt) {
     std::cerr << "unregistered class: " << pt->name() << "\n";
     abort();
 }
-
 
 } // namespace detail
 

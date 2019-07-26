@@ -212,10 +212,13 @@ struct hash_function {
     std::uintptr_t mult;
     std::size_t shift;
 
+    std::size_t operator ()(std::uintptr_t value) const {
+        return static_cast<std::size_t>(mult * value >> shift);
+    }
+
     std::size_t operator ()(const void* p) const {
-        return static_cast<std::size_t>(
-            (mult * reinterpret_cast<std::uintptr_t>(const_cast<void*>(p)))
-            >> shift);
+        return operator ()(
+            reinterpret_cast<std::uintptr_t>(const_cast<void*>(p)));
     }
 };
 
