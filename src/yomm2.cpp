@@ -570,7 +570,7 @@ void runtime::find_hash_function(
     find_hash_function(keys, hash, metrics);
 }
 
-#define YOMM2_TRACE_FIND_HASH(exp) exp
+#define YOMM2_TRACE_FIND_HASH(exp) //exp
 
 void runtime::find_hash_function(
         const std::vector<std::uintptr_t>& values,
@@ -588,20 +588,20 @@ void runtime::find_hash_function(
         log() << "Finding hash factor for " << N << " ti* using "
         << std::thread::hardware_concurrency() << " threads\n");
 
-    std::default_random_engine rnd(13081963);
     int M = 1;
 
     for (auto size = N * 8 / 7; size >>= 1; ) {
         ++M;
     }
 
-    std::uniform_int_distribution<std::uintptr_t> uniform_dist;
-    auto shift = 8 * sizeof(std::uintptr_t) - M;
-
     struct {
         std::mutex mx;
-        std::condition_variable test_ready, result_ready;
+        std::condition_variable success;
         bool stop{false};
+        int total_attempts{0};
+        std::default_random_engine rnd{13081963};
+        std::uniform_int_distribution<std::uintptr_t> uniform_dist;
+        size_t shift;
     } control;
 
     struct test_t {
@@ -609,107 +609,82 @@ void runtime::find_hash_function(
         std::thread thread;
         hash_function hash;
         std::vector<int> buckets;
-        enum { RUNNING, FOUND, FAILED } status;
+        bool found{false};
     };
 
     std::vector<test_t> tests(std::thread::hardware_concurrency());
-    const test_t *success = nullptr;
-
     std::unique_lock<std::mutex> lock(control.mx);
 
     for (auto& test : tests) {
         test.id = &test - &tests[0];
-        test.hash.mult = uniform_dist(rnd) | 1;
-        test.hash.shift = shift;
+        test.hash.shift = {8 * sizeof(std::uintptr_t) - M};
         test.buckets.resize(1 << M);
-        test.status = test_t::RUNNING;
 
         test.thread = std::thread(
             [&values, &control, &test]() {
                 while (true) {
-                    bool found = true;
+                    {
+                      std::scoped_lock<std::mutex> lock(control.mx);
 
-                    for (auto value : values) {
-                        if (test.buckets[test.hash(value)]++) {
-                            found = false;
-                            break;
-                        }
+                      if (test.found) {
+                          control.stop = true;
+                          control.success.notify_one();
+                      }
+
+                      if (control.stop) {
+                          return;
+                      }
+
+                      ++control.total_attempts;
+                      test.hash.mult = control.uniform_dist(control.rnd) | 1;
+
+                      YOMM2_TRACE_FIND_HASH(
+                          log() << test.id
+                          << ": trying " << test.hash.mult
+                          << ", " << test.buckets.size()
+                          << ", " << test.hash.shift
+                          << "\n");
                     }
 
-                    std::unique_lock<std::mutex> lock(control.mx);
+                  test.found = true;
 
-                    YOMM2_TRACE_FIND_HASH(
-                        log() << test.id
-                        << ": tried " << test.hash.mult
-                        << ", " << test.buckets.size()
-                        << ", " << test.hash.shift
-                        << "; found = " << found
-                        << "\n");
-
-                    test.status = found ? test_t::FOUND : test_t::FAILED;
-                    control.result_ready.notify_one();
-
-                    control.test_ready.wait(
-                        lock, [&control, &test](){
-                            return control.stop || test.status == test_t::RUNNING;
-                        });
-
-                    if (control.stop) {
-                        YOMM2_TRACE_FIND_HASH(log() << test.id << ": exiting\n");
-                        break;
-                    }
+                  for (auto value : values) {
+                      if (test.buckets[test.hash(value)]++) {
+                          test.found = false;
+                          break;
+                      }
+                  }
                 }
             });
     }
 
-    int total_attempts = 0;
-
-    while (!control.stop) {
-        control.result_ready.wait(lock);
-
-        for (auto& test : tests) {
-            if (test.status == test_t::FOUND) {
-                ++total_attempts;
-                control.stop = true;
-                success = &test;
-                break;
-            }
-
-            if (test.status == test_t::FAILED) {
-                ++total_attempts;
-                test.hash.mult = uniform_dist(rnd) | 1;
-                std::fill(test.buckets.begin(), test.buckets.end(), 0);
-                test.status = test_t::RUNNING;
-            }
-        }
-
-        control.test_ready.notify_all();
-    }
-
-    control.mx.unlock();
+    control.success.wait(lock, [&control]() { return control.stop; });
+    lock.unlock();
 
     for (auto& test : tests) {
         test.thread.join();
     }
 
-    metrics.hash_search_attempts = total_attempts;
+    metrics.hash_search_attempts = control.total_attempts;
     metrics.hash_search_time = std::chrono::steady_clock::now() - start_time;
     metrics.hash_table_size = 1 << M;
 
-    if (!success) {
-        YOMM2_TRACE(
-            log() << indent(1) << "failed to find hash function after "
-            << total_attempts << " attempts and "
-            << metrics.hash_search_time.count() * 1000 << " msecs\n");
-        throw std::runtime_error("cannot find hash function");
+    for (auto& test : tests) {
+        if (test.found) {
+            hash = test.hash;
+            YOMM2_TRACE(
+                log() << indent(1) << "found x*" << hash.mult << ">>" <<  hash.shift
+                << " after " << control.total_attempts << " attempts and "
+                << metrics.hash_search_time.count() * 1000 << " msecs\n");
+            return;
+        }
     }
 
-    hash = success->hash;
-
     YOMM2_TRACE(
-        log() << indent(1) << "found x*" << hash.mult << ">>" <<  hash.shift
-        << " after " << total_attempts << " attempts and "
+        log() << indent(1) << "failed to find hash function after "
+        << control.total_attempts << " attempts and "
         << metrics.hash_search_time.count() * 1000 << " msecs\n");
+    throw std::runtime_error("cannot find hash function");
 }
 
 
