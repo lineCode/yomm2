@@ -570,7 +570,7 @@ void runtime::find_hash_function(
     find_hash_function(keys, hash, metrics);
 }
 
-#define YOMM2_TRACE_FIND_HASH(exp) //exp
+#define YOMM2_TRACE_FIND_HASH(exp) // exp
 
 void runtime::find_hash_function(
         const std::vector<std::uintptr_t>& values,
@@ -598,7 +598,7 @@ void runtime::find_hash_function(
         std::mutex mx;
         std::condition_variable success;
         bool stop{false};
-        int total_attempts{0};
+        std::atomic<int> total_attempts{0};
         std::default_random_engine rnd{13081963};
         std::uniform_int_distribution<std::uintptr_t> uniform_dist;
         size_t shift;
@@ -621,7 +621,7 @@ void runtime::find_hash_function(
         test.buckets.resize(1 << M);
 
         test.thread = std::thread(
-            [&values, &control, &test]() {
+            [&]() {
                 while (true) {
                     {
                       std::scoped_lock<std::mutex> lock(control.mx);
@@ -636,6 +636,7 @@ void runtime::find_hash_function(
                       }
 
                       ++control.total_attempts;
+
                       test.hash.mult = control.uniform_dist(control.rnd) | 1;
 
                       YOMM2_TRACE_FIND_HASH(
@@ -644,12 +645,14 @@ void runtime::find_hash_function(
                           << ", " << test.buckets.size()
                           << ", " << test.hash.shift
                           << "\n");
-                    }
+                      }
 
                   test.found = true;
+                  std::fill(test.buckets.begin(), test.buckets.end(), 0);
 
                   for (auto value : values) {
-                      if (test.buckets[test.hash(value)]++) {
+                      auto h = test.hash(value);
+                      if (test.buckets[h]++) {
                           test.found = false;
                           break;
                       }
