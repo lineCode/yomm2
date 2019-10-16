@@ -4,34 +4,18 @@
 // See accompanying file LICENSE_1_0.txt
 // or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <yorel/yomm2.hpp>
-#include <yorel/perfect_integer_hash.hpp>
-
+#include <iostream>
+#include <iomanip>
 #include <thread>
 #include <typeinfo>
 
-#define BOOST_TEST_MODULE yomm2
-#include <boost/test/included/unit_test.hpp>
-
-using namespace yorel::yomm2::detail;
+#include <yorel/perfect_integer_hash.hpp>
 
 struct Animal {
     virtual ~Animal() {}
 };
 
-BOOST_AUTO_TEST_CASE(find_hash) {
-    log_on(&std::cerr);
-
-    // std::vector<std::uintptr_t> values;
-
-    // std::uintptr_t val = reinterpret_cast<std::uintptr_t>(&typeid(Animal));
-
-    // YOMM2_TRACE(log() << "values start at " << val);
-
-    // for (int j = 0; j < 1000; ++j) {
-    //     values.push_back(val += sizeof(std::type_info));
-    // }
-
+int main() {
     using std::cout;
     using std::setw;
     using std::setprecision;
@@ -93,10 +77,4 @@ BOOST_AUTO_TEST_CASE(find_hash) {
             range = finder.hash().range();
         }
     }
-
-    // hash_function hash;
-    // runtime::metrics_t metrics;
-    // runtime::find_hash_function(values, hash, metrics);
-
-    log_off();
 }

@@ -54,6 +54,7 @@ if("${YOMM2_BUILD_TYPE}" STREQUAL "ReleaseDebug")
 endif()
 
 add_subdirectory (examples)
+add_subdirectory (research)
 
 if (NOT DEFINED(YOMM2_ENABLE_TESTS))
   set(YOMM2_ENABLE_TESTS CACHE BOOL ON)
