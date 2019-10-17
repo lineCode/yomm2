@@ -5,6 +5,6 @@ shift
 TARGET=$1
 shift
 cd build/$COMPILER/$BUILD
-make $TARGET
+make $TARGET || exit 1
 exec=$(find . -name $TARGET)
 $exec $YOMM2_RUN_TARGET_PREFIX "$@"

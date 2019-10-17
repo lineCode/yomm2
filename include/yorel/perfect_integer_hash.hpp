@@ -8,19 +8,28 @@
 
 #include <limits>
 #include <random>
+#include <vector>
 
 template<typename INTEGER>
 class hash {
   public:
-    hash(INTEGER mult, std::size_t shift) : M(mult), S(shift) {
+    hash(INTEGER mult, std::size_t bits)
+    : M(mult), S(std::numeric_limits<INTEGER>::digits - bits) {
+    }
+
+    hash() : M(0), S(0) {
     }
 
     std::size_t operator ()(INTEGER value) const {
         return static_cast<std::size_t>(M * value >> S);
     }
 
-    int range() const {
-        return 1 << (std::numeric_limits<INTEGER>::digits - S);
+    std::size_t bits() const {
+        return std::numeric_limits<INTEGER>::digits - S;
+    }
+
+    std::size_t range() const {
+        return 1 << bits();
     }
 
     INTEGER multiply() const {
@@ -56,10 +65,10 @@ struct hash_finder_base {
     using HASH = hash<INTEGER>;
 
     static std::size_t initial_bits(std::size_t range) {
-        std::size_t S = 0;
+        std::size_t S = 0, range2 = 1;
 
-        while (range) {
-            range >>= 1;
+        while (range2 < range) {
+            range2 <<= 1;
             S += 1;
         }
 
@@ -75,12 +84,16 @@ class hash_finder : public detail::hash_finder_base<detail::element_t<ITER>> {
     using HASH = hash<INTEGER>;
 
   public:
-    hash_finder(ITER first, ITER last, INTEGER seed)
+    hash_finder()
+    : count(0) {
+    }
+
+    hash_finder(ITER first, ITER last, INTEGER seed = 13081963)
     : first(first), last(last),
       count(std::distance(first, last)),
       bits(this->initial_bits(count)),
       rnd(seed),
-      hf(uniform_dist(rnd), std::numeric_limits<INTEGER>::digits - bits),
+      hf(uniform_dist(rnd), bits),
       check(hf.range()) {
     }
 
@@ -88,11 +101,11 @@ class hash_finder : public detail::hash_finder_base<detail::element_t<ITER>> {
         ++bits;
         check.resize(1 << bits);
         std::fill(check.begin(), check.end(), 0);
-        hf = HASH(uniform_dist(rnd), std::numeric_limits<INTEGER>::digits - bits);
+        hf = HASH(hf.multiply(), bits);
     }
 
-    bool test() {
-        for (ITER iter = first; iter != last; ++iter) {
+    static bool test(ITER iter, ITER last, HASH hf, std::vector<int>& check) {
+        for (; iter != last; ++iter) {
             auto h = hf(*iter);
             if (check[h]++) {
                 return false;
@@ -100,6 +113,14 @@ class hash_finder : public detail::hash_finder_base<detail::element_t<ITER>> {
         }
 
         return true;
+    }
+
+    bool test() {
+        return test(first, last, hf, check);
+    }
+
+    const std::vector<int>& hits() const {
+        return check;
     }
 
     void next() {
